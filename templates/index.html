@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VT → EcoTEA 数据转换工具</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      background: #f4f6f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      padding: 40px 48px;
+      width: 100%;
+      max-width: 560px;
+    }
+
+    .logo {
+      font-size: 28px;
+      font-weight: 700;
+      color: #1a56db;
+      margin-bottom: 6px;
+    }
+    .subtitle {
+      color: #6b7280;
+      font-size: 14px;
+      margin-bottom: 32px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 6px;
+    }
+
+    select, input[type="file"] {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #111827;
+      background: #fff;
+      margin-bottom: 20px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    select:focus, input[type="file"]:focus {
+      border-color: #1a56db;
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed #d1d5db;
+      border-radius: 10px;
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    .drop-zone.dragover {
+      background: #eff6ff;
+      border-color: #1a56db;
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      margin: 0;
+      padding: 0;
+    }
+    .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
+    .drop-zone .hint {
+      font-size: 14px;
+      color: #6b7280;
+      pointer-events: none;
+    }
+    .drop-zone .filename {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1a56db;
+      margin-top: 6px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 13px;
+      background: #1a56db;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover:not(:disabled) { background: #1e429f; }
+    .btn:disabled { background: #9ca3af; cursor: not-allowed; }
+
+    /* Status area */
+    .status {
+      margin-top: 24px;
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+    }
+    .status.loading { background: #eff6ff; color: #1e40af; display: block; }
+    .status.success { background: #ecfdf5; color: #065f46; display: block; }
+    .status.error   { background: #fef2f2; color: #991b1b; display: block; }
+
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .download-btn {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 10px 20px;
+      background: #065f46;
+      color: #fff;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .download-btn:hover { background: #047857; }
+
+    .error-list { margin-top: 8px; padding-left: 16px; }
+    .error-list li { margin-bottom: 4px; }
+
+    .step-badge {
+      display: inline-block;
+      background: #dbeafe;
+      color: #1e40af;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">VT → EcoTEA</div>
+  <div class="subtitle">数据自动映射转换工具 · Singapore Energy Model</div>
+
+  <form id="convertForm">
+
+    <span class="step-badge">STEP 1</span>
+    <label for="model_type">选择数据模型</label>
+    <select name="model_type" id="model_type">
+      {% for m in models %}
+        <option value="{{ m }}">{{ m }}</option>
+      {% endfor %}
+    </select>
+
+    <span class="step-badge">STEP 2</span>
+    <label>上传 EcoTEA 目标文件 (.xlsx)</label>
+    <div class="drop-zone" id="dropZoneEco">
+      <input type="file" name="ecotea_file" id="ecoInput" accept=".xlsx,.xlsm,.xls" required />
+      <div class="icon">📋</div>
+      <div class="hint">点击选择 EcoTEA 文件，或将文件拖到此处</div>
+      <div class="filename" id="ecoFileName"></div>
+    </div>
+
+    <span class="step-badge">STEP 3</span>
+    <label>上传 VT 源文件 (.xlsx)</label>
+    <div class="drop-zone" id="dropZone">
+      <input type="file" name="vt_file" id="fileInput" accept=".xlsx,.xlsm,.xls" required />
+      <div class="icon">📂</div>
+      <div class="hint">点击选择 VT 文件，或将文件拖到此处</div>
+      <div class="filename" id="fileName"></div>
+    </div>
+
+    <button type="submit" class="btn" id="submitBtn" disabled>开始转换</button>
+  </form>
+
+  <div class="status" id="statusBox">
+    <span id="statusContent"></span>
+  </div>
+</div>
+
+<script>
+const form       = document.getElementById('convertForm');
+const dropZone   = document.getElementById('dropZone');
+const dropZoneEco = document.getElementById('dropZoneEco');
+const fileInput  = document.getElementById('fileInput');
+const ecoInput   = document.getElementById('ecoInput');
+const fileName   = document.getElementById('fileName');
+const ecoFileName = document.getElementById('ecoFileName');
+const submitBtn  = document.getElementById('submitBtn');
+const statusBox  = document.getElementById('statusBox');
+const statusContent = document.getElementById('statusContent');
+
+function updateSubmitBtn() {
+  submitBtn.disabled = !(fileInput.files.length > 0 && ecoInput.files.length > 0);
+}
+
+// VT file selection
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length > 0) {
+    fileName.textContent = '✓ ' + fileInput.files[0].name;
+  }
+  updateSubmitBtn();
+});
+
+// EcoTEA file selection
+ecoInput.addEventListener('change', () => {
+  if (ecoInput.files.length > 0) {
+    ecoFileName.textContent = '✓ ' + ecoInput.files[0].name;
+  }
+  updateSubmitBtn();
+});
+
+// Drag & drop for VT file
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) {
+    fileInput.files = e.dataTransfer.files;
+    fileInput.dispatchEvent(new Event('change'));
+  }
+});
+
+// Drag & drop for EcoTEA file
+dropZoneEco.addEventListener('dragover', e => { e.preventDefault(); dropZoneEco.classList.add('dragover'); });
+dropZoneEco.addEventListener('dragleave', () => dropZoneEco.classList.remove('dragover'));
+dropZoneEco.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZoneEco.classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) {
+    ecoInput.files = e.dataTransfer.files;
+    ecoInput.dispatchEvent(new Event('change'));
+  }
+});
+
+// Form submit
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+
+  submitBtn.disabled = true;
+  statusBox.className = 'status loading';
+  statusContent.innerHTML = '<span class="spinner"></span> 正在处理，请稍候…';
+
+  const formData = new FormData(form);
+
+  try {
+    const resp = await fetch('/convert', { method: 'POST', body: formData });
+    const data = await resp.json();
+
+    if (data.success) {
+      statusBox.className = 'status success';
+      statusContent.innerHTML =
+        `✅ 转换成功！共生成 <strong>${data.row_count}</strong> 行数据。<br>
+         <a class="download-btn" href="/download/${encodeURIComponent(data.download_name)}">
+           ⬇ 下载 EcoTEA 文件
+         </a>`;
+    } else {
+      const errs = (data.errors || ['未知错误']).map(e => `<li>${e}</li>`).join('');
+      statusBox.className = 'status error';
+      statusContent.innerHTML = `❌ 转换失败：<ul class="error-list">${errs}</ul>`;
+    }
+  } catch (err) {
+    statusBox.className = 'status error';
+    statusContent.innerHTML = `❌ 网络错误：${err.message}`;
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
