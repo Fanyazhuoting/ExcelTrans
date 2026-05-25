@@ -4,20 +4,29 @@ engine.py — Orchestrates the conversion pipeline.
 To register a new model:
   1. Import its converter class
   2. Add it to MODEL_REGISTRY with a display name as key
+
+Writer dispatch:
+  - Converters with TARGET_WRITER = 'endo' → wp_endo_writer.write_endo_output()
+  - All others → ecotea_writer.write_output()  (default)
 """
 
 from pathlib import Path
 
 from core.ecotea_writer import write_output
+from core.wp_endo_writer import write_endo_output
 
 
 # ── Model registry: display name → converter class ────────────────────────────
 def _build_registry():
     from models.vt_sg_pwr import VTSGPWRConverter
     from models.vt_sg_pri import VTSGPRIConverter
+    from models.vt_sg_oth import VTSGOTHConverter
+    from models.vt_sg_agr import VTSGAGRConverter
     return {
         'VT_SG_PWR': VTSGPWRConverter,
         'VT_SG_PRI': VTSGPRIConverter,
+        'VT_SG_OTH': VTSGOTHConverter,
+        'VT_SG_AGR': VTSGAGRConverter,
     }
 
 
@@ -31,6 +40,10 @@ def convert(model_name: str,
             output_path: str) -> dict:
     """
     Run the full conversion pipeline.
+
+    The writer used depends on the converter's TARGET_WRITER attribute:
+      - 'endo'  → write_endo_output() into WP12345 'Sheet 1'
+      - (other) → write_output()      into EcoTEA template sheet
 
     Returns a result dict with keys:
         success (bool), output_path (str), row_count (int), errors (list[str])
@@ -54,13 +67,22 @@ def convert(model_name: str,
                           "Please verify it is a valid VT file.")
             return {'success': False, 'errors': errors}
 
-        target_sheet = getattr(ConverterClass, 'TARGET_SHEET', 'Power')
-        write_output(
-            records=records,
-            template_path=template_path,
-            output_path=output_path,
-            sheet_name=target_sheet,
-        )
+        target_writer = getattr(ConverterClass, 'TARGET_WRITER', 'ecotea')
+
+        if target_writer == 'endo':
+            write_endo_output(
+                records=records,
+                template_path=template_path,
+                output_path=output_path,
+            )
+        else:
+            target_sheet = getattr(ConverterClass, 'TARGET_SHEET', 'Power')
+            write_output(
+                records=records,
+                template_path=template_path,
+                output_path=output_path,
+                sheet_name=target_sheet,
+            )
 
         return {
             'success': True,
