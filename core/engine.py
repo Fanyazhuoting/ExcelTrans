@@ -14,10 +14,10 @@ from core.ecotea_writer import write_output
 # ── Model registry: display name → converter class ────────────────────────────
 def _build_registry():
     from models.vt_sg_pwr import VTSGPWRConverter
+    from models.vt_sg_pri import VTSGPRIConverter
     return {
         'VT_SG_PWR': VTSGPWRConverter,
-        # Future models:
-        # 'VT_SG_IND': VTSGINDConverter,
+        'VT_SG_PRI': VTSGPRIConverter,
     }
 
 
@@ -54,10 +54,12 @@ def convert(model_name: str,
                           "Please verify it is a valid VT file.")
             return {'success': False, 'errors': errors}
 
+        target_sheet = getattr(ConverterClass, 'TARGET_SHEET', 'Power')
         write_output(
             records=records,
             template_path=template_path,
             output_path=output_path,
+            sheet_name=target_sheet,
         )
 
         return {
