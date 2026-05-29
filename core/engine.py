@@ -22,11 +22,29 @@ def _build_registry():
     from models.vt_sg_pri import VTSGPRIConverter
     from models.vt_sg_oth import VTSGOTHConverter
     from models.vt_sg_agr import VTSGAGRConverter
+    from models.vt_sg_bld import VTSGBLDConverter
+    from models.vt_sg_cer import VTSGCERConverter
+    from models.vt_sg_hfc import VTSGHFCConverter
+    from models.vt_sg_hhd import VTSGHHDConverter
+    from models.vt_sg_ifc import VTSGIFCConverter
+    from models.vt_sg_ind import VTSGINDConverter
+    from models.vt_sg_trn import VTSGTRNConverter
+    from models.vt_sg_wat import VTSGWATConverter
+    from models.vt_sg_wst import VTSGWSTConverter
     return {
         'VT_SG_PWR': VTSGPWRConverter,
         'VT_SG_PRI': VTSGPRIConverter,
         'VT_SG_OTH': VTSGOTHConverter,
         'VT_SG_AGR': VTSGAGRConverter,
+        'VT_SG_BLD': VTSGBLDConverter,
+        'VT_SG_CER': VTSGCERConverter,
+        'VT_SG_HFC': VTSGHFCConverter,
+        'VT_SG_HHD': VTSGHHDConverter,
+        'VT_SG_IFC': VTSGIFCConverter,
+        'VT_SG_IND': VTSGINDConverter,
+        'VT_SG_TRN': VTSGTRNConverter,
+        'VT_SG_WAT': VTSGWATConverter,
+        'VT_SG_WST': VTSGWSTConverter,
     }
 
 

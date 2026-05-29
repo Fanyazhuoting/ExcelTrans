@@ -20,7 +20,7 @@ Mapping reference: VT_OTH_GMIT_to_EcoTEA_Mapping.xlsx
 import pandas as pd
 import numpy as np
 
-from core.base_model import BaseConverter, EndoRecord, EMPTY
+from core.base_model import BaseConverter, EndoRecord, EMPTY, safe_int, safe_float
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,13 +94,15 @@ class VTSGOTHConverter(BaseConverter):
         """
         Parse Data_BY sheet.
 
-        Row 1: year header row (col 10+ = demand years; col 63+ = cost years)
-        Row 2: OTHOTD demand row
-        Row 3+: Process rows
+        Row 1: year header row (col 10-62 = annual demand; col 63+ = cost blocks)
+        Row 2+: Demand rows and Process rows (detected dynamically by Type column).
+
+        The demand row is located by scanning for Type == 'Demand', not by a
+        hardcoded row index, so the converter works even when rows are added
+        or re-ordered in the VT file.
         """
         df = self._sheets['Data_BY']
         self._processes = []
-        self._demand_by_year: dict[int, object] = {}
 
         # Build year→col_index for demand columns (annual, cols 10-62 only).
         # Cols 63+ are INVCOST/FIXOM/VAROM/STOCK blocks which also carry year
@@ -114,27 +116,35 @@ class VTSGOTHConverter(BaseConverter):
                 yr = int(float(v))
                 demand_col_map[yr] = col
 
-        # Parse OTHOTD (demand) row — row index 2
-        demand_row = df.iloc[2]
-        for yr, col in demand_col_map.items():
-            v = demand_row.iloc[col]
-            if not (isinstance(v, float) and np.isnan(v)):
-                self._demand_by_year[yr] = float(v)
+        # Scan rows 2+, tracking the most-recent Demand row
+        current_demand_by_year: dict[int, object] = {}
 
-        # Parse process rows (row 3 onwards)
-        for i in range(3, len(df)):
+        for i in range(2, len(df)):
             row_type = df.iloc[i, COL_TYPE]
+
             if not isinstance(row_type, str):
                 continue
-            if row_type.strip().lower() != 'process':
+
+            row_type_lower = row_type.strip().lower()
+
+            # Demand row: snapshot year-keyed demand values
+            if row_type_lower == 'demand':
+                current_demand_by_year = {}
+                for yr, col in demand_col_map.items():
+                    v = df.iloc[i, col]
+                    if not (isinstance(v, float) and np.isnan(v)):
+                        current_demand_by_year[yr] = float(v)
+                continue
+
+            if row_type_lower != 'process':
                 continue
 
             code = df.iloc[i, COL_CODE]
             if not isinstance(code, str) or not code.strip():
                 continue
 
-            def _val(col):
-                v = df.iloc[i, col]
+            def _val(col, row=i):
+                v = df.iloc[row, col]
                 return None if (isinstance(v, float) and np.isnan(v)) else v
 
             # Build year-keyed cost dicts
@@ -144,18 +154,19 @@ class VTSGOTHConverter(BaseConverter):
             stock   = self._read_cost_cols(df, i, COL_STOCK_START)
 
             self._processes.append({
-                'code':        code.strip(),
-                'description': str(df.iloc[i, COL_DESC]).strip(),
-                'fuel_type':   _val(COL_FUEL_TYPE),
-                'grade':       _val(COL_GRADE),
-                'efficiency':  _val(COL_EFF),
-                'tech_eff':    _val(COL_TECH_EFF),
-                'afa':         _val(COL_AFA),
-                'lifetime':    _val(COL_LIFETIME),
-                'invcost':     invcost,
-                'fixom':       fixom,
-                'varom':       varom,
-                'stock':       stock,
+                'code':           code.strip(),
+                'description':    str(df.iloc[i, COL_DESC]).strip(),
+                'fuel_type':      _val(COL_FUEL_TYPE),
+                'grade':          _val(COL_GRADE),
+                'efficiency':     _val(COL_EFF),
+                'tech_eff':       _val(COL_TECH_EFF),
+                'afa':            _val(COL_AFA),
+                'lifetime':       _val(COL_LIFETIME),
+                'invcost':        invcost,
+                'fixom':          fixom,
+                'varom':          varom,
+                'stock':          stock,
+                'demand_by_year': dict(current_demand_by_year),
             })
 
     def _read_cost_cols(self, df, row_idx: int, start_col: int) -> dict:
@@ -222,11 +233,11 @@ class VTSGOTHConverter(BaseConverter):
         code = proc['code']
 
         # Static fields
-        lifetime  = int(proc['lifetime']) if proc['lifetime'] is not None else EMPTY
+        lifetime  = safe_int(proc['lifetime'])
         grade     = str(proc['grade']).strip() if proc['grade'] is not None else EMPTY
-        eff       = proc['efficiency'] if proc['efficiency'] is not None else EMPTY
+        eff       = safe_float(proc['efficiency'])
         tech_eff  = proc['tech_eff']   if proc['tech_eff']  is not None else EMPTY
-        afa_val   = proc['afa']        if proc['afa']       is not None else EMPTY
+        afa_val   = safe_float(proc['afa'])
         commodity = str(proc['fuel_type']).strip() if proc['fuel_type'] is not None else EMPTY
 
         capacity      = self._otd_capacity.get(code, EMPTY)
@@ -240,8 +251,8 @@ class VTSGOTHConverter(BaseConverter):
             # VAROM: leave as EMPTY (blank) if no value found
             variable_opex = varom_raw if varom_raw is not EMPTY else EMPTY
 
-            # Commodity demand from OTHOTD (even years only; fall back nearest)
-            demand = self._demand_by_year.get(year, EMPTY)
+            # Commodity demand from the most-recent Demand row above this process
+            demand = proc['demand_by_year'].get(year, EMPTY)
 
             rows.append(EndoRecord(
                 **TRACEABILITY,

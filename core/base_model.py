@@ -11,10 +11,53 @@ To add a new model (e.g. VT_SG_IND):
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
+import math
 
 
 MISSING = '-'   # Standard placeholder for missing/N-A values in EcoTEA
 EMPTY = None    # True empty cell — used in WP Endo format where blank ≠ '-'
+
+
+# ── Safe numeric conversion helpers ──────────────────────────────────────────
+
+def _is_blank(v) -> bool:
+    """Return True for any value that should be treated as 'no data'."""
+    if v is None:
+        return True
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return True
+    if isinstance(v, str) and v.strip() == '':
+        return True
+    return False
+
+
+def safe_int(v, default=EMPTY):
+    """
+    Convert v to int safely.  Returns default (EMPTY by default) if v is
+    blank, un-convertible text, or any other unexpected type.
+
+    Accepts: int, float, numeric strings like '10' or '10.0'.
+    Rejects (→ default): NaN, '', 'N/A', 'ten', etc.
+    """
+    if _is_blank(v):
+        return default
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float(v, default=EMPTY):
+    """
+    Convert v to float safely.  Returns default (EMPTY by default) if v is
+    blank or un-convertible.
+    """
+    if _is_blank(v):
+        return default
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return default
 
 
 @dataclass
