@@ -53,18 +53,18 @@ def get_available_models() -> list[str]:
 
 
 def convert(model_name: str,
-            vt_file_path: str,
-            template_path: str,
-            output_path: str) -> dict:
+            vt_source,
+            template_source) -> dict:
     """
-    Run the full conversion pipeline.
+    Run the full conversion pipeline entirely in memory.
 
-    The writer used depends on the converter's TARGET_WRITER attribute:
-      - 'endo'  → write_endo_output() into WP12345 'Sheet 1'
-      - (other) → write_output()      into EcoTEA template sheet
+    Args:
+        model_name:      Registry key for the converter model.
+        vt_source:       File path (str/Path) or BytesIO of the VT source file.
+        template_source: File path (str/Path) or BytesIO of the EcoTEA template.
 
     Returns a result dict with keys:
-        success (bool), output_path (str), row_count (int), errors (list[str])
+        success (bool), output (BytesIO), row_count (int), errors (list[str])
     """
     registry = _build_registry()
     if model_name not in registry:
@@ -77,7 +77,7 @@ def convert(model_name: str,
     errors = []
     try:
         ConverterClass = registry[model_name]
-        converter = ConverterClass(vt_file_path)
+        converter = ConverterClass(vt_source)
         records = converter.extract_power_records()
 
         if not records:
@@ -88,23 +88,21 @@ def convert(model_name: str,
         target_writer = getattr(ConverterClass, 'TARGET_WRITER', 'ecotea')
 
         if target_writer == 'endo':
-            write_endo_output(
+            output = write_endo_output(
                 records=records,
-                template_path=template_path,
-                output_path=output_path,
+                template_source=template_source,
             )
         else:
             target_sheet = getattr(ConverterClass, 'TARGET_SHEET', 'Power')
-            write_output(
+            output = write_output(
                 records=records,
-                template_path=template_path,
-                output_path=output_path,
+                template_source=template_source,
                 sheet_name=target_sheet,
             )
 
         return {
             'success': True,
-            'output_path': str(output_path),
+            'output': output,
             'row_count': len(records),
             'errors': [],
         }

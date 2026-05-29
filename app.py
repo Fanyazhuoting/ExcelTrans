@@ -2,15 +2,13 @@
 app.py — Flask web server for the VT → EcoTEA conversion tool.
 """
 
-import os
+import io
 import sys
-import tempfile
 import threading
 import webbrowser
 from pathlib import Path
 
-from flask import (Flask, jsonify, render_template, request,
-                   send_file, send_from_directory)
+from flask import (Flask, jsonify, render_template, request, send_file)
 
 # Ensure local modules are importable
 sys.path.insert(0, str(Path(__file__).parent))
@@ -19,13 +17,6 @@ from core.engine import convert, get_available_models
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB upload limit
-
-TEMPLATE_PATH = Path(__file__).parent / 'assets' / 'ecotea_template.xlsx'
-UPLOAD_DIR = Path(__file__).parent / 'uploads'
-OUTPUT_DIR = Path(__file__).parent / 'outputs'
-
-UPLOAD_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 @app.route('/')
@@ -57,39 +48,29 @@ def run_conversion():
 
     model_name = request.form.get('model_type', 'VT_SG_PWR')
 
-    # Save uploaded files
-    vt_path = UPLOAD_DIR / f.filename
-    f.save(str(vt_path))
-
-    eco_path = UPLOAD_DIR / eco.filename
-    eco.save(str(eco_path))
-
-    # Output file path
-    stem = Path(f.filename).stem
-    output_path = OUTPUT_DIR / f'EcoTEA_{stem}_converted.xlsx'
+    # Read uploads into memory
+    vt_bytes = io.BytesIO(f.read())
+    eco_bytes = io.BytesIO(eco.read())
 
     result = convert(
         model_name=model_name,
-        vt_file_path=str(vt_path),
-        template_path=str(eco_path),
-        output_path=str(output_path),
+        vt_source=vt_bytes,
+        template_source=eco_bytes,
     )
 
     if result['success']:
-        return jsonify({
-            'success': True,
-            'row_count': result['row_count'],
-            'download_name': output_path.name,
-        })
+        stem = Path(f.filename).stem
+        download_name = f'EcoTEA_{stem}_converted.xlsx'
+        response = send_file(
+            result['output'],
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=download_name,
+        )
+        response.headers['X-Row-Count'] = result['row_count']
+        return response
     else:
         return jsonify({'success': False, 'errors': result['errors']}), 500
-
-
-@app.route('/download/<filename>')
-def download_file(filename):
-    # Sanitise filename to prevent path traversal
-    filename = Path(filename).name
-    return send_from_directory(str(OUTPUT_DIR), filename, as_attachment=True)
 
 
 def open_browser():

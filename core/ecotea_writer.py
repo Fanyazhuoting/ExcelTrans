@@ -5,8 +5,7 @@ If the template format changes, update POWER_COL_ORDER and the header rows
 preserved at the top of write_power_sheet().
 """
 
-import shutil
-from pathlib import Path
+import io
 
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -65,25 +64,20 @@ POWER_DATA_START_ROW = 10
 
 
 def write_output(records: list[PowerRecord],
-                 template_path: str,
-                 output_path: str,
-                 sheet_name: str = 'Power') -> str:
+                 template_source,
+                 sheet_name: str = 'Power') -> io.BytesIO:
     """
     Write records into the EcoTEA template, preserving all header rows.
 
     Args:
-        records:       List of PowerRecord objects.
-        template_path: Path to the blank EcoTEA template .xlsx.
-        output_path:   Destination path for the filled output .xlsx.
-        sheet_name:    Which sheet to fill (default 'Power').
+        records:         List of PowerRecord objects.
+        template_source: File path (str/Path) or BytesIO of the blank EcoTEA template.
+        sheet_name:      Which sheet to fill (default 'Power').
 
     Returns:
-        output_path as string.
+        BytesIO containing the filled workbook.
     """
-    # Copy template so the original is never modified
-    shutil.copy2(template_path, output_path)
-
-    wb = openpyxl.load_workbook(output_path)
+    wb = openpyxl.load_workbook(template_source)
     ws = wb[sheet_name]
 
     # Detect existing formatting from the last header row (row 9 in template)
@@ -126,5 +120,7 @@ def write_output(records: list[PowerRecord],
                 max_len = max(max_len, len(str(cell.value)))
         ws.column_dimensions[col_letter].width = min(max_len + 2, 50)
 
-    wb.save(output_path)
-    return output_path
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output

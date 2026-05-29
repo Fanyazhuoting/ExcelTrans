@@ -207,15 +207,16 @@ class BaseConverter(ABC):
     The engine calls the appropriate method based on target sheet.
     """
 
-    def __init__(self, file_path: str):
-        self.file_path = file_path
+    def __init__(self, file_source):
+        """Accept a file path (str/Path) or a BytesIO object."""
+        self.file_source = file_source
         self._sheets: dict = {}
 
     def _load_sheets(self):
-        """Lazy-load all sheets from the source Excel file."""
+        """Lazy-load all sheets from the source Excel file or BytesIO."""
         import pandas as pd
         if not self._sheets:
-            self._sheets = pd.read_excel(self.file_path, sheet_name=None, header=None)
+            self._sheets = pd.read_excel(self.file_source, sheet_name=None, header=None)
 
     @abstractmethod
     def extract_power_records(self):

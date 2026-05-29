@@ -6,8 +6,7 @@ Data rows start at row 10. This writer preserves all header rows and writes
 EndoRecord objects from row 10 onwards.
 """
 
-import os
-import shutil
+import io
 
 import openpyxl
 from openpyxl.styles import Font, Alignment
@@ -87,8 +86,7 @@ ENDO_SHEET_NAME = 'Sheet 1'
 
 
 def write_endo_output(records: list[EndoRecord],
-                      template_path: str,
-                      output_path: str) -> str:
+                      template_source) -> io.BytesIO:
     """
     Write EndoRecord rows into the WP12345 Endo template.
 
@@ -96,18 +94,13 @@ def write_endo_output(records: list[EndoRecord],
     then writes the supplied records from row 10 onwards.
 
     Args:
-        records:       List of EndoRecord objects.
-        template_path: Path to the WP12345 EcoTEA Endo .xlsx template.
-        output_path:   Destination path for the filled output .xlsx.
+        records:         List of EndoRecord objects.
+        template_source: File path (str/Path) or BytesIO of the WP12345 template.
 
     Returns:
-        output_path as string.
+        BytesIO containing the filled workbook.
     """
-    # Copy file data only (not permissions) so the output is always writable
-    shutil.copyfile(template_path, output_path)
-    os.chmod(output_path, 0o644)
-
-    wb = openpyxl.load_workbook(output_path)
+    wb = openpyxl.load_workbook(template_source)
     ws = wb[ENDO_SHEET_NAME]
 
     # Clear any existing data rows from the template
@@ -134,5 +127,7 @@ def write_endo_output(records: list[EndoRecord],
             cell.alignment = Alignment(horizontal='left', vertical='center',
                                        wrap_text=False)
 
-    wb.save(output_path)
-    return output_path
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output

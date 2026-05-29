@@ -274,16 +274,29 @@ form.addEventListener('submit', async e => {
 
   try {
     const resp = await fetch('/convert', { method: 'POST', body: formData });
-    const data = await resp.json();
 
-    if (data.success) {
+    if (resp.ok) {
+      // Server returns the file directly — trigger browser download
+      const disposition = resp.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      const filename = match ? match[1].replace(/['"]/g, '') : 'EcoTEA_converted.xlsx';
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      // Read row count from header if available
+      const rowCount = resp.headers.get('X-Row-Count') || '?';
       statusBox.className = 'status success';
-      statusContent.innerHTML =
-        `✅ 转换成功！共生成 <strong>${data.row_count}</strong> 行数据。<br>
-         <a class="download-btn" href="/download/${encodeURIComponent(data.download_name)}">
-           ⬇ 下载 EcoTEA 文件
-         </a>`;
+      statusContent.innerHTML = `✅ 转换成功！共生成 <strong>${rowCount}</strong> 行数据，文件已自动下载。`;
     } else {
+      const data = await resp.json();
       const errs = (data.errors || ['未知错误']).map(e => `<li>${e}</li>`).join('');
       statusBox.className = 'status error';
       statusContent.innerHTML = `❌ 转换失败：<ul class="error-list">${errs}</ul>`;
