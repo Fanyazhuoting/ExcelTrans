@@ -31,6 +31,7 @@ def _build_registry():
     from models.vt_sg_trn import VTSGTRNConverter
     from models.vt_sg_wat import VTSGWATConverter
     from models.vt_sg_wst import VTSGWSTConverter
+    from models.vt_sg_hyp import VTSGHYPConverter
     return {
         'VT_SG_PWR': VTSGPWRConverter,
         'VT_SG_PRI': VTSGPRIConverter,
@@ -45,6 +46,7 @@ def _build_registry():
         'VT_SG_TRN': VTSGTRNConverter,
         'VT_SG_WAT': VTSGWATConverter,
         'VT_SG_WST': VTSGWSTConverter,
+        'VT_SG_HYP': VTSGHYPConverter,
     }
 
 
