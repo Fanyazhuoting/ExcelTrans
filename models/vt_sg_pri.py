@@ -1,17 +1,18 @@
 """
-vt_sg_pri.py — Converter for VT_SG_PRI_GREF → EcoTEA Primary sheet.
+vt_sg_pri.py — Converter for VT_SG_PRI_GREF → WP12345 EcoTEA Endo (Sheet 1).
 
 Supports 39 processes:
   • 33 Import processes (rows 7-39 of Import sheet)
   • 6  Mining processes (rows 7-12 of Mining sheet)
 
 Each process expands to 27 rows (years 2018-2070 step 2).
+
+Uses EndoRecord + TARGET_WRITER = 'endo' to match the 62-column WP12345 template.
 """
 
-import pandas as pd
 import numpy as np
 
-from core.base_model import BaseConverter, PowerRecord, MISSING
+from core.base_model import BaseConverter, EndoRecord, EMPTY
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -19,7 +20,6 @@ from core.base_model import BaseConverter, PowerRecord, MISSING
 # ─────────────────────────────────────────────────────────────────────────────
 
 TRACEABILITY = dict(
-    wp6_title='Primary',
     data_owner='ESI',
     data_provider='WP1',
     data_source='GREF',
@@ -63,11 +63,11 @@ YEARS = list(range(2018, 2072, 2))
 # ─────────────────────────────────────────────────────────────────────────────
 
 class VTSGPRIConverter(BaseConverter):
-    """Converter for VT_SG_PRI_GREF → EcoTEA Primary sheet."""
+    """Converter for VT_SG_PRI_GREF → WP12345 EcoTEA Endo (Sheet 1)."""
 
-    TARGET_SHEET = 'Primary'
+    TARGET_WRITER = 'endo'
 
-    def extract_power_records(self) -> list[PowerRecord]:
+    def extract_power_records(self) -> list[EndoRecord]:
         self._load_sheets()
         self._parse_coef()
         self._processes: list[dict] = []
@@ -167,9 +167,9 @@ class VTSGPRIConverter(BaseConverter):
                 'sheet':      'Import',
                 'code':       code,
                 'description': str(desc).strip() if isinstance(desc, str) else str(desc),
-                'comm_out':   comm_out.strip() if isinstance(comm_out, str) else MISSING,
+                'comm_out':   comm_out.strip() if isinstance(comm_out, str) else EMPTY,
                 'start_year': start_yr,
-                'afa':        afa_v if not (isinstance(afa_v, float) and np.isnan(afa_v)) else MISSING,
+                'afa':        afa_v if not (isinstance(afa_v, float) and np.isnan(afa_v)) else EMPTY,
                 'costs':      self._read_year_vals(df, i, cost_cols),
                 'act_bnd':    self._read_year_vals(df, i, act_bnd_cols),
             })
@@ -197,9 +197,9 @@ class VTSGPRIConverter(BaseConverter):
                 'sheet':      'Mining',
                 'code':       code,
                 'description': str(desc).strip() if isinstance(desc, str) else str(desc),
-                'comm_out':   comm_out.strip() if isinstance(comm_out, str) else MISSING,
+                'comm_out':   comm_out.strip() if isinstance(comm_out, str) else EMPTY,
                 'start_year': 2018,
-                'afa':        MISSING,              # Mining has no AFA column
+                'afa':        EMPTY,                # Mining has no AFA column
                 'costs':      self._read_year_vals(df, i, cost_cols),
                 'act_bnd':    self._read_year_vals(df, i, act_bnd_cols),
             })
@@ -217,67 +217,73 @@ class VTSGPRIConverter(BaseConverter):
         return result
 
     def _pick_value(self, val_dict: dict, year: int):
-        """Return value for year; fall back to most recent prior year; else MISSING."""
+        """Return value for year; fall back to most recent prior year; else EMPTY."""
         if year in val_dict:
             return val_dict[year]
         candidates = [(yr, v) for yr, v in val_dict.items() if yr <= year]
         if candidates:
             return max(candidates, key=lambda x: x[0])[1]
-        return MISSING
+        return EMPTY
 
     def _get_ef(self, comm_out: str):
         """Emission factor for a commodity (ktCO2/PJ)."""
-        if not isinstance(comm_out, str) or comm_out == MISSING:
-            return MISSING
+        if not isinstance(comm_out, str) or comm_out is EMPTY:
+            return EMPTY
         if comm_out in NO_EF_COMMS:
-            return MISSING
+            return EMPTY
         if comm_out in self._ef_by_comm:
             return self._ef_by_comm[comm_out]
-        return EF_FALLBACK.get(comm_out, MISSING)
+        return EF_FALLBACK.get(comm_out, EMPTY)
 
     # ── Row builder ───────────────────────────────────────────────────────────
 
-    def _build_rows(self, proc: dict) -> list[PowerRecord]:
-        """Build 27 PowerRecord rows (one per year 2018-2070) for one process."""
+    def _build_rows(self, proc: dict) -> list[EndoRecord]:
+        """Build 27 EndoRecord rows (one per year 2018-2070) for one process."""
         code     = proc['code']
         comm_out = proc['comm_out']
         ef       = self._get_ef(comm_out)
 
         has_act_bnd = bool(proc['act_bnd']) and code in ACT_BND_PROCS
-        cap_type    = 'FX' if has_act_bnd else MISSING
+        cap_type    = 'FX' if has_act_bnd else EMPTY
 
         rows = []
         for year in YEARS:
             varom = self._pick_value(proc['costs'], year)
 
             if has_act_bnd:
-                act_val    = self._pick_value(proc['act_bnd'], year)
-                cap_val    = act_val
-                constraint = act_val if code in CONSTRAINT_PROCS else MISSING
+                act_val = self._pick_value(proc['act_bnd'], year)
+                cap_val = act_val
+                # IMPEEE00: constraint (max import) → commodity_demand column
+                demand  = act_val if code in CONSTRAINT_PROCS else EMPTY
             else:
-                cap_val    = MISSING
-                constraint = MISSING
+                cap_val = EMPTY
+                demand  = EMPTY
 
-            rows.append(PowerRecord(
+            rows.append(EndoRecord(
                 **TRACEABILITY,
+                wp6_title='Primary',
                 process_code=code,
                 description=proc['description'],
                 year=year,
-                start_year='NA',   # col L — Primary model uses NA
-                lifetime=MISSING,
+                start_year=proc['start_year'],
+                lifetime='NA',          # Import/Mining无寿命参数
+                grade=EMPTY,
                 ef=ef,
                 ef_unit='PJ',
-                capex=MISSING,
-                fixed_opex='NA',   # col T — no fixed opex for Import/Mining
+                currency='MSGD2016',
+                capex='NA',             # Import/Mining无投资成本
+                capex_unit='PJ',
+                fixed_opex='NA',        # Import/Mining无固定运维成本
+                fixed_opex_unit='PJ*yr(2018)',
                 variable_opex=varom,
-                variable_opex_unit='GJ (2018)',
-                efficiency=MISSING,
+                variable_opex_unit='PJ (2018)',
+                efficiency='NA',        # Import/Mining效率1:1，填NA
+                tech_efficiency=EMPTY,
                 commodity_share=1,
                 commodity=comm_out,
-                afa=proc['afa'],
-                heat_rate=MISSING,
-                capacity=cap_val,
-                capacity_type=cap_type,
-                constraint=constraint,
+                commodity_demand=demand,
+                afa=proc['afa'] if proc['afa'] is not EMPTY else 'NA',
+                capacity=cap_val if cap_val is not EMPTY else 'NA',
+                capacity_type=cap_type if cap_type is not EMPTY else 'NA',
             ))
         return rows

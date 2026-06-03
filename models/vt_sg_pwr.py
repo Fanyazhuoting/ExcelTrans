@@ -1,29 +1,35 @@
 """
-vt_sg_pwr.py — Converter for VT_SG_PWR_GREF → EcoTEA Power sheet.
+vt_sg_pwr.py — Converter for VT_SG_PWR_GMIT → WP12345 EcoTEA Endo (Sheet 1).
 
-Mapping rules are encoded as explicit functions.
-To update a rule, find and edit the corresponding _get_* method.
+PWR (Power) is a supply-side module. Key differences from demand-side models:
+  - No Demand/Process row pairing; no commodity_demand (AK) values
+  - Data_BY column layout is compact (58 cols, not 91):
+      E=EFF, F=AFA, G=LIFE, H=Bound, I~O=INVCOST(7yrs), P~V=FIXOM, W~AC=VAROM,
+      AD~BF=RESID(initial capacity MW, by year)
+  - CAP2ACT = 31.536 for all ELE/SOL/CHP processes (afa field, not AFA factor)
+  - EFF = thermal efficiency (e.g. 0.497 for CCGT-F)
+  - RESID (MW) = initial installed capacity → EcoTEA capacity column
+
+Mapping reference: VT_PWR_GMIT_to_EcoTEA_Mapping.xlsx
 """
 
 import pandas as pd
 import numpy as np
 
-from core.base_model import BaseConverter, PowerRecord, MISSING
+from core.base_model import BaseConverter, EndoRecord, EMPTY
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Constants — traceability metadata filled into every row
+# Constants
 # ─────────────────────────────────────────────────────────────────────────────
 TRACEABILITY = dict(
-    wp6_title='Power',
-    data_owner='ESI',
+    data_owner='WP1',
     data_provider='WP1',
-    data_source='GREF',
-    data_source_desc='SG GREF v8.14; VT_SG_PWR_GREF',
+    data_source='GMIT/GREF Model',
+    data_source_desc='SG GREF v8.14; VT_SG_PWR_GMIT',
     data_user='WP1',
     usage_purpose='Scenario analysis',
     geography='SG',
-    start_year=2018,  # Technology Start Year — always 2018 in this dataset
 )
 
 # Emission factor lookup keyed by VT commodity name
@@ -40,11 +46,9 @@ EF_MAP = {
     'PWRHYD':  0,
 }
 
-# AFA conversion: VT raw value → EcoTEA value
-AFA_MAP = {
-    0.75: 0.8,
-    0.14: 0.1,
-}
+# CAP2ACT values by process type (EcoTEA afa field = capacity to activity factor)
+CAP2ACT_ELE_SOL = 31.536   # all ELE/SOL/CHP processes: 1 GW × 8760 h × 3600 s ÷ 10^15 × 10^9
+CAP2ACT_PRE     = 1.0      # PRE (retrofit) processes
 
 # Processes whose row-year expansion is driven by INVCOST year columns
 # (solar-type: no capacity RESID data; expand per cost year)
@@ -66,7 +70,7 @@ COGEN_ELEC_EFF = {
     'IBMNGACGP00': 0.3,
 }
 
-# Processes where capacity and capacity_type are forced to MISSING
+# Processes where capacity and capacity_type are forced to EMPTY
 # (retrofit technology — capacity comes from a separate mechanism)
 NO_CAPACITY_PROCS = {'PWRNGACCH11'}
 
@@ -76,16 +80,16 @@ BOUND_OVERRIDES = {'PWRWASWTE00': 'UP'}
 # Fixed commodity overrides (where simple Comm-IN lookup doesn't apply)
 COMMODITY_OVERRIDES = {
     'PWRBMCSTP00': 'PWRBMS+PWACOA',
-    'PWRWASWTE00': MISSING,
-    'PWRSOLLPV00': MISSING,
-    'BDESOLLPV00': MISSING,
-    'BDNSOLLPV00': MISSING,
-    'BDFSOLLPV00': MISSING,
-    'WATSOLFPV00': MISSING,
-    'TPASOLLPV00': MISSING,
-    'TPJSOLLPV00': MISSING,
-    'IRFNGACGP00': MISSING,
-    'IBMNGACGP00': MISSING,
+    'PWRWASWTE00': EMPTY,
+    'PWRSOLLPV00': EMPTY,
+    'BDESOLLPV00': EMPTY,
+    'BDNSOLLPV00': EMPTY,
+    'BDFSOLLPV00': EMPTY,
+    'WATSOLFPV00': EMPTY,
+    'TPASOLLPV00': EMPTY,
+    'TPJSOLLPV00': EMPTY,
+    'IRFNGACGP00': EMPTY,
+    'IBMNGACGP00': EMPTY,
 }
 
 # Canonical process output order (matches EcoTEA reference sheet)
@@ -112,7 +116,7 @@ COMMODITY_SHARE_OVERRIDES = {
     'IBMNGACGP00': 1,
 }
 
-# Interpolation rule overrides (most processes use MISSING)
+# Interpolation rule overrides (most processes use EMPTY)
 INTERPOLATION_OVERRIDES = {
     'PWRBMCSTP00': 5,
 }
@@ -124,7 +128,9 @@ INTERPOLATION_OVERRIDES = {
 
 class VTSGPWRConverter(BaseConverter):
 
-    def extract_power_records(self) -> list[PowerRecord]:
+    TARGET_WRITER = 'endo'
+
+    def extract_power_records(self) -> list[EndoRecord]:
         self._load_sheets()
         self._parse_data_by()
         self._parse_pwr()
@@ -210,15 +216,27 @@ class VTSGPWRConverter(BaseConverter):
     def _parse_pwr(self):
         """Parse PWR sheet: Comm-IN, Share info, START year."""
         df = self._sheets['PWR']
-        self._pwr_comm: dict[str, str] = {}    # code → Comm-IN
+        self._pwr_comm: dict[str, str] = {}       # code → Comm-IN
         self._pwr_share0: dict[str, object] = {}  # code → interpolation rule
         self._pwr_share: dict[str, object] = {}   # code → share value
+        self._pwr_start: dict[str, int] = {}      # code → START year
 
         current_code = None
         for i in range(6, len(df)):
             code = df.iloc[i, 2]
             if isinstance(code, str) and code not in ('*', 'Technology Name'):
                 current_code = code
+            # ~FI_T section: TechName at col 9, Comm-IN at col 10, START at col 15
+            fi_t_code = df.iloc[i, 9]
+            if isinstance(fi_t_code, str) and not fi_t_code.startswith('*'):
+                start_val = df.iloc[i, 15]
+                if not (isinstance(start_val, float) and np.isnan(start_val)):
+                    try:
+                        yr = int(float(start_val))
+                        if yr > 2000:
+                            self._pwr_start[fi_t_code] = yr
+                    except (ValueError, TypeError):
+                        pass
             comm = df.iloc[i, 10]
             if current_code and isinstance(comm, str) and comm != '*' and not pd.isna(comm):
                 # Only store the FIRST Comm-IN for each process
@@ -226,6 +244,24 @@ class VTSGPWRConverter(BaseConverter):
                     self._pwr_comm[current_code] = comm
                     self._pwr_share0[current_code] = df.iloc[i, 12]
                     self._pwr_share[current_code] = df.iloc[i, 13]
+
+        # Parse CGP sheet for CHP process START years and Comm-IN
+        if 'CGP' in self._sheets:
+            df_cgp = self._sheets['CGP']
+            for i in range(len(df_cgp)):
+                fi_t_code = df_cgp.iloc[i, 9]
+                if isinstance(fi_t_code, str) and not fi_t_code.startswith('*'):
+                    start_val = df_cgp.iloc[i, 15]
+                    if not (isinstance(start_val, float) and np.isnan(start_val)):
+                        try:
+                            yr = int(float(start_val))
+                            if yr > 2000:
+                                self._pwr_start[fi_t_code] = yr
+                        except (ValueError, TypeError):
+                            pass
+                    comm_in = df_cgp.iloc[i, 10]
+                    if isinstance(comm_in, str) and fi_t_code not in self._pwr_comm:
+                        self._pwr_comm[fi_t_code] = comm_in
 
     def _parse_sol(self):
         """
@@ -310,51 +346,32 @@ class VTSGPWRConverter(BaseConverter):
     # ── Emission factor lookup ───────────────────────────────────────────────
 
     def _get_ef(self, code: str) -> object:
-        """
-        Look up emission factor for a process.
-        Priority: EF_OVERRIDES → primary Comm-IN from EMI/EF_MAP.
-
-        Special cases:
-        - PWRWASWTE00: multi-fuel (COA+WAS); EcoTEA uses WAS ef=50
-        - PWRNGACCH11: commodity 'PWRRTFNGA' maps to NGA ef=56.1
-        - Solar: ef=0
-        - Cogen: uses NGA ef
-        """
-        # Process-level overrides (where comm lookup gives wrong result)
+        """Look up emission factor (ktCO2/PJ) for a process."""
         EF_OVERRIDES = {
-            'PWRWASWTE00': EF_MAP['PWRWAS'],   # 50 — waste is the billed fuel
+            'PWRWASWTE00': EF_MAP['PWRWAS'],   # 50 — waste is the primary fuel
             'PWRNGACCH11': EF_MAP['PWRNGA'],   # 56.1 — retrofit NGA plant
             'IRFNGACGP00': EF_MAP['PWRNGA'],
             'IBMNGACGP00': EF_MAP['PWRNGA'],
         }
         if code in EF_OVERRIDES:
             return EF_OVERRIDES[code]
-
         if code in SOLAR_PROCESSES:
             return 0
-
         comm = self._pwr_comm.get(code)
         if comm:
             if comm in self._emi:
                 return self._emi[comm]
             if comm in EF_MAP:
                 return EF_MAP[comm]
-        return MISSING
-
-    # ── AFA conversion ───────────────────────────────────────────────────────
-
-    def _convert_afa(self, raw: object) -> object:
-        """Convert VT AFA value to EcoTEA equivalent."""
-        if pd.isna(raw):
-            return MISSING
-        return AFA_MAP.get(float(raw), raw)
+        return EMPTY
 
     # ── Commodity lookup ─────────────────────────────────────────────────────
 
     def _get_commodity(self, code: str) -> object:
         if code in COMMODITY_OVERRIDES:
-            return COMMODITY_OVERRIDES[code]
-        return self._pwr_comm.get(code, MISSING)
+            v = COMMODITY_OVERRIDES[code]
+            return EMPTY if v is EMPTY else v
+        return self._pwr_comm.get(code, EMPTY)
 
     # ── Row-year expansion ───────────────────────────────────────────────────
 
@@ -364,30 +381,26 @@ class VTSGPWRConverter(BaseConverter):
 
         Rules:
         - Solar processes → expand by INVCOST change years, no capacity value
-        - UP processes with STOCK → deduplicate non-zero values, keep first
-          year each unique value appears
-        - FX processes with STOCK → single row at year=2018, first non-zero cap
-        - No STOCK / forced no-cap → single row at year=2018, cap=MISSING
+        - UP processes with RESID → deduplicate non-zero values, keep first year
+        - FX processes with RESID → single row at year=2018, first non-zero cap
+        - No RESID / forced no-cap → single row at year=2018, cap=EMPTY
         """
         if code in NO_CAPACITY_PROCS:
-            return [(2018, MISSING)]
+            return [(2018, EMPTY)]
 
         if code in SOLAR_PROCESSES:
-            # Row years are driven by INVCOST year columns in SOL sheet
             sol = self._sol_data.get(code, {})
             invcost = sol.get('invcost', {})
             years = sorted(yr for yr, v in invcost.items()
                            if not (isinstance(v, float) and np.isnan(v)))
             if not years:
                 years = [2018]
-            return [(yr, MISSING) for yr in years]
+            return [(yr, EMPTY) for yr in years]
 
-        # Normal process: use Data_BY capacity
         db = self._data_by[code]
         bound = BOUND_OVERRIDES.get(code, db['bound'])
         cap_by_year = db['capacity']
 
-        # Collect non-zero, non-NaN capacity entries in year order
         valid = []
         for yr in self._cap_year_headers:
             v = cap_by_year.get(yr)
@@ -395,15 +408,11 @@ class VTSGPWRConverter(BaseConverter):
                 valid.append((int(yr), v))
 
         if not valid:
-            # No STOCK data at all
-            return [(2018, MISSING)]
+            return [(2018, EMPTY)]
 
         if isinstance(bound, str) and bound == 'FX':
-            # FX: single row at base year 2018, capacity = first non-zero value
             return [(2018, valid[0][1])]
 
-        # UP (or unspecified with data): deduplicate — keep first year of
-        # each new unique value
         rows = []
         prev_val = None
         for yr, v in valid:
@@ -412,120 +421,111 @@ class VTSGPWRConverter(BaseConverter):
                 prev_val = v
         return rows
 
-    # ── Build all PowerRecord rows for one process ───────────────────────────
+    # ── Build all EndoRecord rows for one process ────────────────────────────
 
-    def _build_rows(self, code: str) -> list[PowerRecord]:
+    def _build_rows(self, code: str) -> list[EndoRecord]:
         db = self._data_by[code]
         cap_rows = self._get_capacity_rows(code)
 
-        # Resolve shared fields (same for all year-rows of this process)
-        ef = self._get_ef(code)
-        afa = self._convert_afa(db['afa'])
+        ef        = self._get_ef(code)
         commodity = self._get_commodity(code)
-        comm_share = COMMODITY_SHARE_OVERRIDES.get(code, 1 if commodity != MISSING else MISSING)
-        interp = INTERPOLATION_OVERRIDES.get(code, MISSING)
+        comm_share = COMMODITY_SHARE_OVERRIDES.get(
+            code, 100 if commodity is not EMPTY else EMPTY)
         bound = BOUND_OVERRIDES.get(code, db['bound'])
 
-        # Efficiency:
-        #   - Solar variants (BDE/BDN/BDF/WAT/TPA/TPJ) → always MISSING
-        #   - Cogen processes → use electrical efficiency override (0.3)
-        #   - Others → raw value from Data_BY, or MISSING if NaN
+        # START year: per-process from PWR/CGP sheet, default 2018
+        start_year = self._pwr_start.get(code, 2018)
+
+        # Grade = Bound type (UP/FX/NA) from Data_BY col H
+        grade = str(bound).strip() if isinstance(bound, str) and bound.strip() else EMPTY
+
+        # Efficiency: solar variants → EMPTY; cogen → electrical eff override
         raw_eff = db['efficiency']
         if code in SOLAR_VARIANTS:
-            efficiency = MISSING
+            efficiency = EMPTY
         else:
-            efficiency = COGEN_ELEC_EFF.get(code,
-                         raw_eff if not (isinstance(raw_eff, float) and np.isnan(raw_eff))
-                         else MISSING)
+            efficiency = COGEN_ELEC_EFF.get(
+                code,
+                float(raw_eff) if not (isinstance(raw_eff, float) and np.isnan(raw_eff))
+                else EMPTY)
 
-        # Heat rate: solar processes have no heat rate
+        # Heat rate → tech_efficiency field (EcoTEA AG col per mapping)
+        # Solar processes have no heat rate
         raw_hr = db['heat_rate']
-        heat_rate = (MISSING if code in SOLAR_PROCESSES
-                     else (raw_hr if not (isinstance(raw_hr, float) and np.isnan(raw_hr))
-                           else MISSING))
+        tech_eff = (EMPTY if code in SOLAR_PROCESSES
+                    else (float(raw_hr) if not (isinstance(raw_hr, float) and np.isnan(raw_hr))
+                          else EMPTY))
 
         # Lifetime
         raw_lt = db['lifetime']
         lifetime = (int(raw_lt) if not (isinstance(raw_lt, float) and np.isnan(raw_lt))
-                    else MISSING)
+                    else EMPTY)
+
+        # CAP2ACT (afa field) = 31.536 for all ELE/SOL/CHP; 1 for PRE retrofit
+        cap2act = CAP2ACT_PRE if code in COMMODITY_OVERRIDES and code == 'PWRNGACCH11' \
+                  else CAP2ACT_ELE_SOL
 
         # Capacity type
         if code in NO_CAPACITY_PROCS:
-            cap_type = MISSING
+            cap_type = EMPTY
         elif isinstance(bound, str) and bound in ('FX', 'UP'):
             cap_type = bound
         else:
-            # NaN bound but has capacity data (e.g. PWRWASWTE00 → UP via override)
-            cap_type = MISSING
-
-        # UC_RHSRT: fixed reference values for PWRSOLLPV00 only.
-        # These values are taken directly from the reference EcoTEA file.
-        # The VT SOL sheet second block stores per-period T-values that require
-        # TIMES model period-duration metadata (not in the VT Excel) to convert
-        # to annual constraint values, so we hardcode the known correct values.
-        UC_RHSRT_FIXED = {
-            'PWRSOLLPV00': {
-                2018: 0.0290451024544057,
-                2020: 0.0641013375821088,
-                2030: 0.870599786263404,
-                2050: 0.870599786263404,
-            }
-        }
-        uc_rhsrt_by_year = UC_RHSRT_FIXED.get(code, {})
+            cap_type = EMPTY
 
         rows = []
         for (year, cap_mw) in cap_rows:
-            # Cost values: pick year-appropriate INVCOST/FIXOM/VAROM
+            # Cost values
             if code in SOLAR_PROCESSES:
-                sol = self._sol_data.get(code, {})
-                capex    = self._pick_cost(sol.get('invcost', {}), year)
-                fixom    = self._pick_cost(sol.get('fixom', {}), year)
-                varom    = MISSING
-                var_unit = MISSING if code in NO_VAROM_UNIT_PROCS else 'PJ (2018)'
+                sol   = self._sol_data.get(code, {})
+                capex = self._pick_cost(sol.get('invcost', {}), year)
+                fixom = self._pick_cost(sol.get('fixom', {}), year)
+                varom = EMPTY
             else:
-                capex    = self._pick_cost(db['invcost'], year)
-                fixom    = self._pick_cost(db['fixom'], year)
-                varom    = self._pick_cost(db['varom'], year)
-                var_unit = 'PJ (2018)'
+                capex = self._pick_cost(db['invcost'], year)
+                fixom = self._pick_cost(db['fixom'], year)
+                varom = self._pick_cost(db['varom'], year)
 
-            # Capacity type for solar: always use bound from Data_BY
-            if code in SOLAR_PROCESSES:
-                ct = str(bound) if isinstance(bound, str) and bound in ('FX', 'UP') else MISSING
-            else:
-                ct = cap_type
+            var_unit = EMPTY if code in NO_VAROM_UNIT_PROCS else 'PJ'
 
-            # UC_RHSRT: pick exact year or fall back to most recent prior year
-            uc_val = self._pick_cost(uc_rhsrt_by_year, year) if uc_rhsrt_by_year else MISSING
+            # Capacity type for solar: use bound from Data_BY
+            ct = (str(bound) if isinstance(bound, str) and bound in ('FX', 'UP')
+                  else EMPTY) if code in SOLAR_PROCESSES else cap_type
 
-            r = PowerRecord(
+            rows.append(EndoRecord(
                 **TRACEABILITY,
+                wp6_title='Power',
                 process_code=code,
                 description=str(db['description']).strip(),
                 year=year,
+                start_year=start_year,
                 lifetime=lifetime,
+                grade=grade,
                 ef=ef,
+                ef_unit='PJ',
+                currency='MSGD2016',
                 capex=capex,
+                capex_unit='GW',
                 fixed_opex=fixom,
+                fixed_opex_unit='GW*yr',
                 variable_opex=varom,
                 variable_opex_unit=var_unit,
                 efficiency=efficiency,
+                tech_efficiency=tech_eff,   # Heat Rate → EcoTEA AG col
                 commodity_share=comm_share,
                 commodity=commodity,
-                interpolation_rule=interp,
-                afa=afa,
-                heat_rate=heat_rate,
-                capacity=cap_mw if cap_mw != MISSING else MISSING,
+                commodity_demand=EMPTY,     # Supply-side: no demand
+                afa=cap2act,                # CAP2ACT = 31.536
+                capacity=cap_mw,
                 capacity_type=ct,
-                uc_rhsrt=uc_val,
-            )
-            rows.append(r)
+            ))
         return rows
 
     def _pick_cost(self, cost_dict: dict, year: int) -> object:
         """
         Return cost value for the given year.
         Uses exact match first, then falls back to the most recent prior year.
-        Returns MISSING if no valid value found.
+        Returns EMPTY if no valid value found.
         """
         if year in cost_dict:
             v = cost_dict[year]
@@ -537,4 +537,4 @@ class VTSGPWRConverter(BaseConverter):
                       if yr <= year and not (isinstance(v, float) and np.isnan(v))]
         if candidates:
             return max(candidates, key=lambda x: x[0])[1]
-        return MISSING
+        return EMPTY
